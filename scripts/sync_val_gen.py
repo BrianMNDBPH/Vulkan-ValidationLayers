@@ -111,7 +111,7 @@ endif::VK_EXT_fragment_density_map[]
 '''
 
 # use simplest filtering to assure completest list
-def ParseAccessType(table_text):
+def ParseAccessType(table_text, stage_order):
     preproc = ''
     access_stage_table = {}
     skip = False
@@ -148,8 +148,6 @@ def ParseAccessType(table_text):
                 stage_column = cols[0].strip()
             if debug_table_parse:
                 print("stage_column:", stage_column)
-            if stage_column.startswith(' Any'):
-                continue
             if stage_column.startswith(' None required'):
                 continue
             stage_column = stage_column.replace(', or ',', ') # Oxford comma
@@ -163,8 +161,12 @@ def ParseAccessType(table_text):
                 continue
             elif not stages[0]:
                 continue
-            stages_lens = [len(s.split(':')) for s in stages]
-            stage_enums = [ s.split(':')[1].strip('or ') for s in stages]
+
+            if stage_column.startswith(' Any'):
+                stage_enums = stage_order
+            else:
+                stages_lens = [len(s.split(':')) for s in stages]
+                stage_enums = [ s.split(':')[1].strip('or ') for s in stages]
 
             access_stage_table[access_enum] += stage_enums
             if(debug_table_parse):
@@ -851,8 +853,8 @@ def GenSyncTypeHelper(gen) :
         lines.append('// Access types \n//    ' + '\n//    '.join(access_types) +  '\n' * 2)
 
     stage_order_map = ParsePipelineStageOrder(stage_order, snippet_pipeline_stages_order, config)
-    access_stage_table = ParseAccessType(snippet_access_types_supported)
-    stage_queue_cap_table = ParseAccessType(snippet_pipeline_stages_supported)
+    access_stage_table = ParseAccessType(snippet_access_types_supported, stage_order)
+    stage_queue_cap_table = ParseAccessType(snippet_pipeline_stages_supported, stage_order)
     stage_access_table = CreateStageAccessTable(stage_order, access_stage_table)
     stage_access_combinations = CreateStageAccessCombinations(config, stage_order, stage_access_table)
     lines.extend(StageAccessEnums(stage_access_combinations, config))
