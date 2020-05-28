@@ -23,6 +23,7 @@
  */
 
 #pragma once
+#include "chassis.h"
 #include "core_validation_error_enums.h"
 #include "core_validation_types.h"
 #include "descriptor_sets.h"
@@ -39,6 +40,13 @@
 #include <list>
 #include <deque>
 #include <map>
+
+uint32_t ResolveRemainingLevels(const VkImageSubresourceRange* range, uint32_t mip_levels);
+uint32_t ResolveRemainingLayers(const VkImageSubresourceRange* range, uint32_t layers);
+VkImageSubresourceRange NormalizeSubresourceRange(const VkImageCreateInfo& image_create_info, const VkImageSubresourceRange& range);
+std::pair<uint32_t, const VkImageView*> GetFramebufferAttachments(const VkRenderPassBeginInfo& rp_begin,
+                                                                  const FRAMEBUFFER_STATE& fb_state);
+VkImageSubresourceRange NormalizeSubresourceRange(const IMAGE_STATE& image_state, const VkImageSubresourceRange& range);
 
 enum SyncScope {
     kSyncScopeInternal,
@@ -238,6 +246,100 @@ using std::unordered_map;
 
 extern std::shared_ptr<cvdescriptorset::DescriptorSetLayout const> GetDslFromPipelineLayout(
     PIPELINE_LAYOUT_STATE const* layout_data, uint32_t set);
+
+// Returns the effective extent of an image subresource, adjusted for mip level and array depth.
+static inline VkExtent3D GetImageSubresourceExtent(const IMAGE_STATE* img, const VkImageSubresourceLayers* subresource) {
+    const uint32_t mip = subresource->mipLevel;
+
+    // Return zero extent if mip level doesn't exist
+    if (mip >= img->createInfo.mipLevels) {
+        return VkExtent3D{0, 0, 0};
+    }
+
+    // Don't allow mip adjustment to create 0 dim, but pass along a 0 if that's what subresource specified
+    VkExtent3D extent = img->createInfo.extent;
+
+    // If multi-plane, adjust per-plane extent
+    if (FormatIsMultiplane(img->createInfo.format)) {
+        VkExtent2D divisors = FindMultiplaneExtentDivisors(img->createInfo.format, subresource->aspectMask);
+        extent.width /= divisors.width;
+        extent.height /= divisors.height;
+    }
+
+    if (img->createInfo.flags & VK_IMAGE_CREATE_CORNER_SAMPLED_BIT_NV) {
+        extent.width = (0 == extent.width ? 0 : std::max(2U, 1 + ((extent.width - 1) >> mip)));
+        extent.height = (0 == extent.height ? 0 : std::max(2U, 1 + ((extent.height - 1) >> mip)));
+        extent.depth = (0 == extent.depth ? 0 : std::max(2U, 1 + ((extent.depth - 1) >> mip)));
+    } else {
+        extent.width = (0 == extent.width ? 0 : std::max(1U, extent.width >> mip));
+        extent.height = (0 == extent.height ? 0 : std::max(1U, extent.height >> mip));
+        extent.depth = (0 == extent.depth ? 0 : std::max(1U, extent.depth >> mip));
+    }
+
+    // Image arrays have an effective z extent that isn't diminished by mip level
+    if (VK_IMAGE_TYPE_3D != img->createInfo.imageType) {
+        extent.depth = img->createInfo.arrayLayers;
+    }
+
+    return extent;
+}
+
+// For image copies between compressed/uncompressed formats, the extent is provided in source image texels
+// Destination image texel extents must be adjusted by block size for the dest validation checks
+static inline VkExtent3D GetAdjustedDestImageExtent(VkFormat src_format, VkFormat dst_format, VkExtent3D extent) {
+    VkExtent3D adjusted_extent = extent;
+    if ((FormatIsCompressed(src_format) || FormatIsSinglePlane_422(src_format)) &&
+        !(FormatIsCompressed(dst_format) || FormatIsSinglePlane_422(dst_format))) {
+        VkExtent3D block_size = FormatTexelBlockExtent(src_format);
+        adjusted_extent.width /= block_size.width;
+        adjusted_extent.height /= block_size.height;
+        adjusted_extent.depth /= block_size.depth;
+    } else if (!(FormatIsCompressed(src_format) || FormatIsSinglePlane_422(src_format)) &&
+               (FormatIsCompressed(dst_format) || FormatIsSinglePlane_422(dst_format))) {
+        VkExtent3D block_size = FormatTexelBlockExtent(dst_format);
+        adjusted_extent.width *= block_size.width;
+        adjusted_extent.height *= block_size.height;
+        adjusted_extent.depth *= block_size.depth;
+    }
+    return adjusted_extent;
+}
+
+// Test if the extent argument has any dimensions set to 0.
+static inline bool IsExtentSizeZero(const VkExtent3D* extent) {
+    return ((extent->width == 0) || (extent->height == 0) || (extent->depth == 0));
+}
+
+static inline VkDeviceSize GetBufferSizeFromCopyImage(const VkBufferImageCopy& region, VkFormat image_format) {
+    VkDeviceSize buffer_size = 0;
+    VkExtent3D copy_extent = region.imageExtent;
+    VkDeviceSize buffer_width = (0 == region.bufferRowLength ? copy_extent.width : region.bufferRowLength);
+    VkDeviceSize buffer_height = (0 == region.bufferImageHeight ? copy_extent.height : region.bufferImageHeight);
+    VkDeviceSize unit_size = FormatElementSize(image_format,
+                                               region.imageSubresource.aspectMask);  // size (bytes) of texel or block
+
+    if (FormatIsCompressed(image_format) || FormatIsSinglePlane_422(image_format)) {
+        // Switch to texel block units, rounding up for any partially-used blocks
+        auto block_dim = FormatTexelBlockExtent(image_format);
+        buffer_width = (buffer_width + block_dim.width - 1) / block_dim.width;
+        buffer_height = (buffer_height + block_dim.height - 1) / block_dim.height;
+
+        copy_extent.width = (copy_extent.width + block_dim.width - 1) / block_dim.width;
+        copy_extent.height = (copy_extent.height + block_dim.height - 1) / block_dim.height;
+        copy_extent.depth = (copy_extent.depth + block_dim.depth - 1) / block_dim.depth;
+    }
+
+    // Either depth or layerCount may be greater than 1 (not both). This is the number of 'slices' to copy
+    uint32_t z_copies = std::max(copy_extent.depth, region.imageSubresource.layerCount);
+    if (IsExtentSizeZero(&copy_extent) || (0 == z_copies)) {
+        // TODO: Issue warning here? Already warned in ValidateImageBounds()...
+    } else {
+        // Calculate buffer offset of final copied byte, + 1.
+        buffer_size = (z_copies - 1) * buffer_height * buffer_width;                   // offset to slice
+        buffer_size += ((copy_extent.height - 1) * buffer_width) + copy_extent.width;  // add row,col
+        buffer_size *= unit_size;                                                      // convert to bytes
+    }
+    return buffer_size;
+}
 
 struct SHADER_MODULE_STATE;
 
@@ -512,11 +614,31 @@ class ValidationStateTracker : public ValidationObject {
     PHYSICAL_DEVICE_STATE* GetPhysicalDeviceState();
     const PHYSICAL_DEVICE_STATE* GetPhysicalDeviceState() const;
 
+    VkQueueFlags GetQueueFlags(const COMMAND_POOL_STATE& cp_state) const {
+        return GetPhysicalDeviceState()->queue_family_properties[cp_state.queueFamilyIndex].queueFlags;
+    }
+
+    VkQueueFlags GetQueueFlags(const CMD_BUFFER_STATE& cb_state) const {
+        VkQueueFlags queue_flags = 0;
+        auto pool = cb_state.command_pool.get();
+        if (pool) {
+            queue_flags = GetQueueFlags(*pool);
+        }
+        return queue_flags;
+    }
+
     using CommandBufferResetCallback = std::function<void(VkCommandBuffer)>;
     std::unique_ptr<CommandBufferResetCallback> command_buffer_reset_callback;
     template <typename Fn>
     void SetCommandBufferResetCallback(Fn&& fn) {
         command_buffer_reset_callback.reset(new CommandBufferResetCallback(std::forward<Fn>(fn)));
+    }
+
+    using CommandBufferFreeCallback = std::function<void(VkCommandBuffer)>;
+    std::unique_ptr<CommandBufferFreeCallback> command_buffer_free_callback;
+    template <typename Fn>
+    void SetCommandBufferFreeCallback(Fn&& fn) {
+        command_buffer_free_callback.reset(new CommandBufferFreeCallback(std::forward<Fn>(fn)));
     }
 
     using SetImageViewInitialLayoutCallback = std::function<void(CMD_BUFFER_STATE*, const IMAGE_VIEW_STATE&, VkImageLayout)>;
@@ -1055,6 +1177,9 @@ class ValidationStateTracker : public ValidationObject {
     void FreeCommandBufferStates(COMMAND_POOL_STATE* pool_state, const uint32_t command_buffer_count,
                                  const VkCommandBuffer* command_buffers);
     void FreeDescriptorSet(cvdescriptorset::DescriptorSet* descriptor_set);
+    std::vector<const IMAGE_VIEW_STATE*> GetAttachmentViews(const VkRenderPassBeginInfo& rp_begin,
+                                                            const FRAMEBUFFER_STATE& fb_state) const;
+    std::vector<const IMAGE_VIEW_STATE*> GetCurrentAttachmentViews(const CMD_BUFFER_STATE& cb_state) const;
     BASE_NODE* GetStateStructPtrFromObject(const VulkanTypedHandle& object_struct);
     VkFormatFeatureFlags GetPotentialFormatFeatures(VkFormat format) const;
     void IncrementBoundObjects(CMD_BUFFER_STATE const* cb_node);
@@ -1194,4 +1319,22 @@ class ValidationStateTracker : public ValidationObject {
             DispatchGetPhysicalDeviceProperties2KHR(gpu, &prop2);
         }
     }
+
+  private:
+    // Simple base address allocator allow allow VkDeviceMemory allocations to appear to exist in a common address space.
+    // At 256GB allocated/sec  ( > 8GB at 30Hz), will overflow in just over 2 years
+    class FakeAllocator {
+      public:
+        void Free(VkDeviceSize fake_address){};  // Define the interface just in case we ever need to be cleverer.
+        VkDeviceSize Alloc(VkDeviceSize size) {
+            const auto alloc = free_;
+            assert(std::numeric_limits<VkDeviceSize>::max() - size >= free_);  //  776.722963 days later...
+            free_ = free_ + size;
+            return alloc;
+        }
+
+      private:
+        VkDeviceSize free_ = 0;
+    };
+    FakeAllocator fake_memory;
 };

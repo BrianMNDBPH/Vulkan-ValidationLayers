@@ -163,6 +163,7 @@ VK_LAYER_EXPORT bool FormatIsPacked(VkFormat format);
 VK_LAYER_EXPORT bool FormatElementIsTexel(VkFormat format);
 VK_LAYER_EXPORT bool FormatSizesAreEqual(VkFormat srcFormat, VkFormat dstFormat, uint32_t region_count, const VkImageCopy *regions);
 VK_LAYER_EXPORT bool FormatRequiresYcbcrConversion(VkFormat format);
+VK_LAYER_EXPORT VkDeviceSize GetIndexAlignment(VkIndexType indexType);
 
 VK_LAYER_EXPORT uint32_t FormatDepthSize(VkFormat format);
 VK_LAYER_EXPORT VkFormatNumericalType FormatDepthNumericalType(VkFormat format);
@@ -172,7 +173,7 @@ VK_LAYER_EXPORT uint32_t FormatPlaneCount(VkFormat format);
 VK_LAYER_EXPORT uint32_t FormatChannelCount(VkFormat format);
 VK_LAYER_EXPORT VkExtent3D FormatTexelBlockExtent(VkFormat format);
 VK_LAYER_EXPORT uint32_t FormatElementSize(VkFormat format, VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT);
-VK_LAYER_EXPORT double FormatTexelSize(VkFormat format);
+VK_LAYER_EXPORT double FormatTexelSize(VkFormat format, VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT);
 VK_LAYER_EXPORT VkFormatCompatibilityClass FormatCompatibilityClass(VkFormat format);
 VK_LAYER_EXPORT VkDeviceSize SafeModulo(VkDeviceSize dividend, VkDeviceSize divisor);
 VK_LAYER_EXPORT VkDeviceSize SafeDivision(VkDeviceSize dividend, VkDeviceSize divisor);

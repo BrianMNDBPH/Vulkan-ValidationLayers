@@ -1174,6 +1174,9 @@ VK_LAYER_EXPORT uint32_t FormatElementSize(VkFormat format, VkImageAspectFlags a
             case VK_FORMAT_D16_UNORM_S8_UINT:
                 format = VK_FORMAT_D16_UNORM;
                 break;
+            case VK_FORMAT_D24_UNORM_S8_UINT:
+                return 3;
+                break;
             case VK_FORMAT_D32_SFLOAT_S8_UINT:
                 format = VK_FORMAT_D32_SFLOAT;
                 break;
@@ -1193,8 +1196,8 @@ VK_LAYER_EXPORT uint32_t FormatElementSize(VkFormat format, VkImageAspectFlags a
 
 // Return the size in bytes of one texel of given foramt
 // For compressed or multi-plane, this may be a fractional number
-VK_LAYER_EXPORT double FormatTexelSize(VkFormat format) {
-    double texel_size = static_cast<double>(FormatElementSize(format));
+VK_LAYER_EXPORT double FormatTexelSize(VkFormat format, VkImageAspectFlags aspectMask) {
+    double texel_size = static_cast<double>(FormatElementSize(format, aspectMask));
     VkExtent3D block_extent = FormatTexelBlockExtent(format);
     uint32_t texels_per_block = block_extent.width * block_extent.height * block_extent.depth;
     if (1 < texels_per_block) {
@@ -1410,4 +1413,19 @@ const std::set<VkFormat> vk_formats_requiring_ycbcr_conversion{VK_FORMAT_G8B8G8R
 VK_LAYER_EXPORT bool FormatRequiresYcbcrConversion(VkFormat format) {
     auto it = vk_formats_requiring_ycbcr_conversion.find(format);
     return (it != vk_formats_requiring_ycbcr_conversion.end());
+}
+
+VK_LAYER_EXPORT VkDeviceSize GetIndexAlignment(VkIndexType indexType) {
+    switch (indexType) {
+        case VK_INDEX_TYPE_UINT16:
+            return 2;
+        case VK_INDEX_TYPE_UINT32:
+            return 4;
+        case VK_INDEX_TYPE_UINT8_EXT:
+            return 1;
+        default:
+            // Not a real index type. Express no alignment requirement here; we expect upper layer
+            // to have already picked up on the enum being nonsense.
+            return 1;
+    }
 }
